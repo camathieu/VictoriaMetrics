@@ -10,6 +10,7 @@ import (
 	"github.com/VictoriaMetrics/VictoriaMetrics/app/vmselect/searchutil"
 	"github.com/VictoriaMetrics/VictoriaMetrics/lib/auth"
 	"github.com/VictoriaMetrics/VictoriaMetrics/lib/cgroup"
+	"github.com/VictoriaMetrics/VictoriaMetrics/lib/flagutil"
 	"github.com/VictoriaMetrics/VictoriaMetrics/lib/logger"
 	"github.com/VictoriaMetrics/VictoriaMetrics/lib/storage"
 	"github.com/VictoriaMetrics/VictoriaMetrics/lib/timerpool"
@@ -17,6 +18,18 @@ import (
 
 var maxGraphiteSeries = flag.Int("search.maxGraphiteSeries", 300e3, "The maximum number of time series, which can be scanned during queries to Graphite Render API. "+
 	"See https://docs.victoriametrics.com/victoriametrics/integrations/graphite/#render-api")
+
+// getMaxQueryLen returns the current value of the search.maxQueryLen flag.
+// This flag is defined in the prometheus package, but we need to access it for Graphite queries too.
+func getMaxQueryLen() int {
+	// Get the flag value directly from the flag package
+	if f := flag.Lookup("search.maxQueryLen"); f != nil {
+		if v, ok := f.Value.(*flagutil.Bytes); ok {
+			return v.IntN()
+		}
+	}
+	return 16 * 1024 // Default value if flag is not found
+}
 
 type evalConfig struct {
 	at                  *auth.Token
@@ -127,6 +140,12 @@ func (s *series) summarize(aggrFunc aggrFunc, startTime, endTime, step int64, xF
 }
 
 func execExpr(ec *evalConfig, query string) (nextSeriesFunc, error) {
+	// Validate query length to prevent memory exhaustion
+	maxLen := getMaxQueryLen()
+	if len(query) > maxLen {
+		return nil, fmt.Errorf("too long query; got %d bytes; mustn't exceed `-search.maxQueryLen=%d` bytes", len(query), maxLen)
+	}
+
 	expr, err := graphiteql.Parse(query)
 	if err != nil {
 		return nil, fmt.Errorf("cannot parse %q: %w", query, err)
